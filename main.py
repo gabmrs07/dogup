@@ -263,8 +263,8 @@ class OutputWidget(QWidget):
 	"Mostra as info de pacman -Qui"
 
 	comma_keys = [
-			'Provides', 'Depends On', 'Required By',
-			'Optional For', 'Optional Deps'
+			'Licenses', 'Provides', 'Depends On',
+			'Required By', 'Optional For', 'Optional Deps'
 			]
 
 	def __init__(self, parent = None):
@@ -334,13 +334,18 @@ class OutputWidget(QWidget):
 									value += f', {element}'
 								else:
 									value += f' {element}'
+						elif self.window_size == self.size():
+							if len(value) + 4 <= max_length:
+								value += ' ...'
+							else:
+								value = f"{value[:-4]} ..."
 						else:
 							if len(element) > max_length:
 								value += f"{element[:-4]} ..."
 							elif key in self.comma_keys:
-								value += f",\n\t{element}"
+								value += f",\n\t  {element}"
 							else:
-								value += f"\n\t{element}"
+								value += f"\n\t  {element}"
 							max_length += self.max_length
 
 					max_length = self.max_length
@@ -355,8 +360,8 @@ class OutputWidget(QWidget):
 					self.max_length = 50
 					self.list_item_focus()
 			else:
-				if self.max_length != 120:
-					self.max_length = 120
+				if self.max_length != 110:
+					self.max_length = 110
 					self.list_item_focus()
 			time.sleep(0.1)
 
