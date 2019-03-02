@@ -2,40 +2,50 @@
 
 import os
 import os.path
-import subprocess
+import re
 import sys
 import time
 import urllib.request
+from stat import *
+from subprocess import Popen, PIPE, run, STDOUT
 from threading import Thread
 from PySide2 import QtCore, QtGui
 from PySide2.QtWidgets import *
 
 app_name = 'DogUp!'
-__version__ = '1.3a'
+__version__ = '1.4a'
 
-home_path = os.getenv('HOME')
-local_path = os.path.join(home_path, '.local')
-share_path = os.path.join(local_path, 'share')
-log_path = os.path.join(home_path, '.local/share/dogup/')
+log_path = '/var/log/dogup'
 log_tray = os.path.join(log_path, 'report.txt')
 log_update = os.path.join(log_path, 'update.log')
 
-if not os.path.exists(log_path):
-	if os.path.exists(local_path):
-		if os.path.exists(share_path):
-			os.mkdir(log_path)
-		else:
-			os.mkdir(share_path)
-			os.mkdir(log_path)
-	else:
-		os.mkdir(local_path)
-		os.mkdir(share_path)
+def chmod_setter(file):
+	"Coloca as permissões de file para 755"
+
+	os.chmod(file, S_IRUSR | S_IWUSR | S_IXUSR |
+			S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH)
+
+def log_files():
+	"Cria a pasta e os arquivos log"
+
+	if not os.path.exists(log_path):
 		os.mkdir(log_path)
+		chmod_setter(log_path)
 
-if os.path.exists(log_tray):
-	os.remove(log_tray)
+	if os.path.exists(log_tray):
+		os.remove(log_tray)
 
-def resource_path(relative_path, icon_path = True):
+	if not os.path.exists(log_update):
+		file = open(log_update, 'w')
+		file.write("## Dogup's updates ##\n\n")
+		file.close()
+
+	info(f'{app_name} ({__version__})')
+	chmod_setter(log_update)
+	chmod_setter(log_tray)
+
+
+def resource_path(relative_path):
 	"""Estabelece a pasta onde estão os ícones do app.
 	Se compilado pelo PyInstaller, então está em '/tmp/__MEIPASS/';
 	se executado pelo script original, então estsão na 'base_path'"""
@@ -45,27 +55,26 @@ def resource_path(relative_path, icon_path = True):
 		base_path = sys._MEIPASS
 	except Exception:
 		# a pasta do script pode ser tirada por 'os.path.abspath('')'
-		if icon_path:
-			base_path = '/home/frajola/mega/codes/dogup/icon/'
-		else:
-			base_path = '/home/frajola/mega/codes/dogup/'
+		base_path = '/home/frajola/mega/codes/dogup/icon/'
 
 	return os.path.join(base_path, relative_path)
 
-def info(msg, newline = False, notify = False, end = '.'):
+
+def info(msg, notify = False, pacman = False, end = '.'):
 	"logger debugger"
 
 	log_file = open(log_tray, 'a')
 	log_time = time.strftime('%d/%m/%y, %H:%M')
-	log_msg = f"[{log_time}]: {msg}{end}\n"
+
+	if pacman == True:
+		log_msg = f'{msg}'
+	else:
+		log_msg = f"[{log_time}]: {msg}{end}\n"
 
 	if notify == True:
-		send_notify(msg)
+		send_notify(f'{msg}{end}')
 
-	if newline:
-		log_file.write(f'\n{log_msg}\n')
-	else:
-		log_file.write(f'{log_msg}\n')
+	log_file.write(f'{log_msg}\n')
 
 	print(log_msg)
 	log_file.close()
@@ -74,11 +83,11 @@ def info(msg, newline = False, notify = False, end = '.'):
 def send_notify(msg):
 	"Envia ao OS uma notificação"
 
-	subprocess.run(f"notify-send '{app_name}' '{msg}'", shell = True)
+	run(f"notify-send '{app_name}' '{msg}'", shell = True)
 
 
 class InternetConnection:
-	"Verifica se há atualizações e, se sim, manipula essas logrmações"
+	"Verifica se há atualizações e, se sim, manipula essas informações"
 
 	def __init__(self):
 
@@ -107,22 +116,13 @@ class InternetConnection:
 class Update:
 	"Constrói os dados para o uso no GUI"
 
-	query_keylist = [
-		'Name', 'Version', 'Description', 'Architecture',
-		'URL', 'Licenses', 'Groups', 'Provides',
-		'Depends On', 'Optional Deps', 'Required By', 'Optional For',
-		'Conflicts With', 'Replaces', 'Installed Size', 'Packager',
-		'Build Date', 'Install Date', 'Install Reason', 'Install Script',
-		'Validated By'
-		]
-
 	def a__init__(self):
-		raw_packages = subprocess.run(
-							'pacman -Quq', shell=True, capture_output=True, encoding='utf-8')
+		raw_packages = run('pacman -Quq', shell=True,
+							capture_output=True, encoding='utf-8')
 		if raw_packages.returncode == 0:
 			self.builder(raw_packages.stdout.split('\n'))
 		elif raw_packages.returncode == 1:
-			info('O sistema está atualizado', newline = True, notify = True)
+			info('O sistema está atualizado', notify = True)
 			sys.exit(0)
 		else:
 			pass # exception
@@ -131,19 +131,30 @@ class Update:
 		"Atualiza a situação do sistema"
 
 		info('Refreshing...\n\npacman -Syy', end = '')
-		refresh = subprocess.run(f'sudo pacman -Syy &>> {log_tray}', shell=True)
-		if refresh.returncode == 0:
-			raw_packages = subprocess.run(
-								'pacman -Quq', shell=True, capture_output=True, encoding='utf-8')
-			if raw_packages.returncode == 0:
-				self.builder(raw_packages.stdout.split('\n'))
-			elif raw_packages.returncode == 1:
-				info('O sistema está atualizado', newline = True, notify = True)
-				sys.exit(0)
+
+		refresh = Popen('pacman -Syy', stdout=PIPE, stderr=STDOUT,
+						shell=True, encoding='utf-8')
+
+		for line in iter(refresh.stdout.readline, ''):
+			msg = line.strip()
+			if re.match('error:.*', msg):
+				self.exception = True
+				break
 			else:
-				self.status = 'exception'
+				info(msg, pacman = True)
 		else:
-			self.status = 'exception'
+			info('', pacman = True)
+
+		raw_packages = run('pacman -Quq', shell=True,
+							capture_output=True, encoding='utf-8')
+
+		if raw_packages.returncode == 0:
+			self.builder(raw_packages.stdout.split('\n'))
+		elif raw_packages.returncode == 1:
+			info('O sistema está atualizado', notify = True)
+			sys.exit(0)
+		else:
+			self.exception = True
 
 	def builder(self, packages):
 		"Construtor dos dados"
@@ -158,9 +169,34 @@ class Update:
 			self.version_process = Thread(target=self.new_version_builder)
 			self.version_process.run()
 
-			info(f"Pacotes desatualizados: {', '.join(self.list)}", newline = True)
-			self.len = len(self.list)
+			info(f"Pacotes desatualizados: {', '.join(self.list)}")
 
+			# Keylist generator
+			self.query_keylist = []
+
+			sample = run(f'pacman -Qi {self.list[0]}', shell=True,
+						capture_output=True, encoding='utf-8')
+			sample_stripped = sample.stdout.split('\n')
+
+			for raw_key in sample_stripped:
+				if raw_key != '':
+					sed = re.match('^[\w\s.]*:?', raw_key.strip())
+					words = re.split('\s+', sed.group())
+
+					while '' in words:
+						words.remove('')
+					else:
+						words.remove(':')
+
+					self.query_keylist.append(' '.join(words))
+
+			# comma list generator
+			self.comma_keys = []
+
+			for num in [5, 7, 8, 9, 10, 11, 12, 13]:
+				self.comma_keys.append(self.query_keylist[num])
+
+			# values generator
 			self.info_dict = {}
 
 			for package in self.list:
@@ -168,11 +204,12 @@ class Update:
 				dict_list = []
 				value_list = []
 
-				query = subprocess.run(
-						f'pacman -Qi {package}', shell=True, capture_output=True, encoding='utf-8')
+				query = run(f'pacman -Qi {package}', shell=True,
+							capture_output=True, encoding='utf-8')
 				raw_query = query.stdout.split('\n')
 
 				for element in raw_query:
+
 					if element != '' and ':' in element:
 						content_list = element.split(':')
 
@@ -200,17 +237,17 @@ class Update:
 					elif element and ':' not in element:
 						value_list.append(element.strip())
 
-					if key and key == 'Validated By':
+					if key and key == self.query_keylist[-1]:
 						value = self.value_generator(key, value_list)
 						dict_list.append({key : value})
 
 				self.info_dict[package] = dict_list
 
 			info('Foram geradas as informações dos pacotes desatualizados')
-			self.status = 'normal'
+			self.exception = False
 
 		except:
-			self.status = 'exception'
+			self.exception = True
 
 	def new_version_builder(self):
 		"""Gera os valores da versão para qual o pacote será atualizado e as informações
@@ -219,7 +256,7 @@ class Update:
 		self.sync_log = []
 		self.version = {}
 
-		command = subprocess.run('pacman -Qu', shell=True, capture_output=True, encoding='utf-8')
+		command = run('pacman -Qu', shell=True, capture_output=True, encoding='utf-8')
 		raw_stdout = command.stdout.split('\n')
 		for package in self.list:
 			stdout_package = raw_stdout[0]
@@ -233,7 +270,7 @@ class Update:
 
 		value_list = []
 
-		if key == 'Optional Deps':
+		if key == self.query_keylist[9]:
 			for element in raw_value:
 				value_list.append(element.strip())
 		else:
@@ -269,7 +306,13 @@ class TrayIcon(QSystemTrayIcon):
 			icon_file = 'operation.png'
 
 		self.icon(icon_file)
-		self.setToolTip(f'{app_name}')
+
+		if len(pacman.list) == 1:
+			msg = 'Há um pacote desatualizado!'
+		else:
+			msg = f'Há {len(pacman.list)} pacotes desatualizados!'
+
+		self.setToolTip(f'{app_name} - {msg}')
 
 		# Abre o menu tanto pelo botão direito quanto pelo esquerdo do mouse
 		# Se quiser somente pelo botão direito, use setContextMenu()
@@ -288,20 +331,21 @@ class TrayIcon(QSystemTrayIcon):
 
 class TrayMainMenu(QWidget):
 
-	def __init__(self, initial_status = None):
-		super().__init__()
+	def __init__(self, exception = False, parent = None):
+		super().__init__(parent, QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint)
 
 		# Build and show TrayIcon
 		self.tray = TrayIcon(self)
 		self.tray.show()
 
-		# QProcess da atualização
-		self.process = QtCore.QProcess(self)
-		self.process.finished.connect(self.log_writer)
+		# QThread object do processo de atualização do pacman
+		self.update_process = UpdaterThread(self)
+		self.update_process.finished.connect(self.log_writer)
 
 		# Estética geral do widget
-		self.setFixedSize(300, 250)
-		self.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+		self.setMinimumSize(300, 250)
+		self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+		self.setAttribute(QtCore.Qt.WA_QuitOnClose, True)
 
 		box_frame = QFrame(self)
 		box_frame.setGeometry(10, 20, 280, 220)
@@ -310,8 +354,8 @@ class TrayMainMenu(QWidget):
 
 		header_title = QLabel("DogUp!", self)
 		header_title.setAlignment(QtCore.Qt.AlignCenter)
-		header_title.setStyleSheet("font: 11pt; background-color: rgb(239, 239, 239);")
-		header_title.setGeometry(20, 4, 80, 35)
+		header_title.setAutoFillBackground(True)
+		header_title.setGeometry(20, 3, 80, 35)
 
 		self.buttons = {}
 		self.button_creator('sync', 'Atualizar', 20, 80, 260, 30, self.updater)
@@ -319,17 +363,30 @@ class TrayMainMenu(QWidget):
 		self.button_creator('info', 'Informações', 20, 160, 260, 30, self.show_output)
 		self.button_creator('exit', 'Sair', 20, 200, 260, 30, self.exit)
 
-		self.status = QLabel(self)
+		self.status = QLabel()
 		self.status.setAlignment(QtCore.Qt.AlignCenter)
-		self.status.setGeometry(20, 40, 260, 30)
 		self.status.setFrameShape(QFrame.Box)
-		self.status_changer(initial_status)
+
+		self.scroll = QScrollArea(self)
+		self.scroll.setGeometry(20, 40, 260, 30)
+		self.scroll.setWidgetResizable(True)
+		self.scroll.setWidget(self.status)
+
+		if exception == False:
+			if len(pacman.list) == 1:
+				msg = 'Há um pacote desatualizado!'
+			else:
+				msg = f'Há {len(pacman.list)} pacotes desatualizados!'
+
+			self.status_changer(msg, 'red')
+		elif exception == True:
+			self.raise_exception()
 
 		# Build (OutputWidget and QMenu) or LogOutput
+		self.menu = QMenu(self.buttons['menu'])
 		try:
 			self.output_widget = OutputWidget()
 
-			self.menu = QMenu(self.buttons['menu'])
 			for element in pacman.list:
 				self.menu.addAction(str(element))
 			self.buttons['menu'].setMenu(self.menu)
@@ -363,72 +420,60 @@ class TrayMainMenu(QWidget):
 			self.hide()
 			self.log_widget.log_generator()
 
-	def status_changer(self, status):
+	def status_changer(self, text, color = 'blue'):
 		"Gerencia o status no main menu"
 
-		if status == 'updating':
-			msg = 'Atualizando...'
-			color = 'blue'
-		elif status == 'updated':
-			msg = 'O sistema está atualizado!'
-			color = 'green'
-		elif status == 'exception':
-			msg = 'Houve um erro!'
-			color = 'red'
-			self.buttons['sync'].setEnabled(False)
-			self.buttons['info'].setText('Ver log')
-			info('Um erro surgiu durante a execução!')
-			send_notify('Um erro surgiu durante a execução!')
-		else:
-			msg = f'Há {len(pacman.list)} pacotes desatualizados!'
-			color = 'red'
-
-		self.status.setText(msg)
+		self.status.setText(text)
 		self.status.setStyleSheet(f"font: bold 10pt; color: {color}")
+
+	def raise_exception(self):
+		"Lança a exception e habilita o log no main menu"
+
+		self.status_changer('Houve um erro!', 'red')
+		self.buttons['sync'].setEnabled(False)
+		self.scroll.setGeometry(20, 40, 260, 70)
+		self.buttons['info'].setText('Ver log')
+		self.tray.icon('operation.png')
+
+		info('Um erro surgiu durante a execução!')
+		send_notify('Um erro surgiu durante a execução!')
 
 	def updater(self):
 		"Atualiza o sistema"
 
 		info(f"Atualizando: {', '.join(pacman.list)}.\n\npacman -Su --noconfirm", end = '')
-		self.status_changer('updating')
+		self.status_changer('Atualizando...')
 		self.tray.icon('operation.png')
 		self.buttons['sync'].setEnabled(False)
 		self.hide()
 
 		try:
-			command = f"{resource_path(f'qprocess.py', False)}"
-			args = [f"{log_tray}"]
-			self.process.start(command, args)
+			self.update_process.start()
 		except:
-			self.status_changer('exception')
+			self.raise_exception()
 
-	def log_writer(self, exitCode, exitStatus):
+	def log_writer(self):
 		"Escreve os pacotes atualizados no log e fecha o app"
 
-		info('O sistema foi atualizado', newline = True, notify = True)
-		self.status_changer('updated')
-		self.tray.icon('normal.png')
+		if not self.status.text() == 'Houve um erro!':
+			msg = 'O sistema foi atualizado!'
+			info('', pacman = True)
+			info(msg, notify = True)
+			self.status_changer(msg, 'green')
+			self.tray.icon('normal.png')
 
-		log_text = ''
-
-		if os.path.exists(log_update):
-			option = 'a'
-			log_text += '\n'
-		else:
-			option = 'w'
-			log_text += "## Dogup's updates ##\n\n"
-
-		log_file = open(log_update, option)
-		log_text += f"[Update - {time.strftime('%d/%m/%y')}]:\n"
-		for package in pacman.sync_log:
-			log_text += f"{package}\n"
-		log_file.write(log_text)
-		log_file.close()
+			log_text = ''
+			log_file = open(log_update, 'a')
+			log_text += f"\n[Update - {time.strftime('%d/%m/%y')}]:\n"
+			for package in pacman.sync_log:
+				log_text += f"{package}\n"
+			log_file.write(log_text)
+			log_file.close()
 
 	def exit(self):
 		"Fecha o app completamente"
 
-		if self.process.state() == QtCore.QProcess.NotRunning:
+		if self.update_process.isRunning() != True:
 			self.close()
 		else:
 			send_notify('Aguarde o sistema atualizar...')
@@ -440,22 +485,44 @@ class TrayMainMenu(QWidget):
 			self.hide()
 
 
-class OutputWidget(QWidget):
-	"Mostra as info de pacman -Qui"
-
-	comma_keys = [
-			'Licenses', 'Provides', 'Depends On',
-			'Required By', 'Optional For', 'Optional Deps',
-			'Replaces', 'Conflicts With'
-			]
+class UpdaterThread(QtCore.QThread):
+	"Processo paralelo (thread), para não congelar o gui"
 
 	def __init__(self, parent = None):
 		super().__init__(parent)
+		self.parent = parent
 
-		self.setWindowTitle(f'{app_name} - Informações:')
-		self.setFixedSize(850, 650)
+	def run(self):
+		update = Popen('pacman -Su --noconfirm',
+						stdout=PIPE, stderr=STDOUT, shell=True, encoding='utf-8')
 
-		self.max_length = 50
+		# o segundo paramentro é o sentinel, que pára o loop ao encontrá-lo, ou seja,
+		# ao se encontrar '', para-se o loop
+		self.parent.scroll.setGeometry(20, 40, 260, 70)
+		for line in iter(update.stdout.readline, ''):
+			msg = line.strip()
+			if re.match('error:.*', msg):
+				self.parent.exception()
+				break
+			else:
+				self.parent.status_changer(msg)
+				info(msg, pacman = True)
+
+
+class OutputWidget(QWidget):
+	"Mostra as info de pacman -Qui"
+
+	def __init__(self, parent = None):
+		super().__init__(parent, QtCore.Qt.Dialog)
+
+		self.setWindowTitle(f'{app_name} - Informações')
+		self.setMinimumSize(850, 650)
+
+		icon = QtGui.QIcon()
+		icon.addFile(resource_path('normal.png'), QtCore.QSize(256, 256))
+		self.setWindowIcon(icon)
+
+		self.max_length = self.max_length_generator()
 		self.full_info = False
 
 		main_layout = QGridLayout()
@@ -507,18 +574,27 @@ class OutputWidget(QWidget):
 		scroll.setWidget(label_widget)
 		self.journalist()
 
+	def max_length_generator(self):
+		"Gera a máxima extensão dos QLabel na right_wing"
+
+		return self.width() / 17
+
 	def journalist(self):
 		"Quando o item da lista é selecionado, completa-se os campos do pacote"
 
-		max_length = self.max_length
+		if self.full_info == True:
+			max_length = self.max_length * 1.5
+		else:
+			max_length = self.max_length
 
 		package = self.list_view.currentItem().text()
+
 		for dictionary in pacman.info_dict[package]:
 			for key in pacman.query_keylist:
 				try:
 					value = ''
 
-					if key == 'Version' and not pacman.version_process.is_alive():
+					if key == pacman.query_keylist[1] and not pacman.version_process.is_alive():
 						version_value = f"{dictionary[key][0]} > {pacman.version[package]}"
 						value_list = [version_value]
 					else:
@@ -529,10 +605,12 @@ class OutputWidget(QWidget):
 							if value == '':
 								value += element
 							else:
-								if key in self.comma_keys:
-									value += f', {element}'
+								if key in pacman.comma_keys:
+									comma = ','
 								else:
-									value += f' {element}'
+									comma = ''
+
+								value += f'{comma} {element}'
 						else:
 							if not self.full_info:
 								if len(value) + 4 <= max_length:
@@ -544,15 +622,17 @@ class OutputWidget(QWidget):
 								if value == '':
 									value += element
 								else:
-									if key in self.comma_keys:
-										value += f",\n\t  {element}"
+									if key in pacman.comma_keys:
+										comma = ','
 									else:
-										value += f"\n\t  {element}"
+										comma = ''
 
+									value += f"{comma}\n{((len(key) - 1) * 2) * ' '}{element}"
 									max_length += (self.max_length - 20)
 
 					max_length = self.max_length
 					self.label_dict[key].setText(f'{key}: {value}')
+
 				except:
 					pass
 
@@ -585,15 +665,7 @@ class OutputWidget(QWidget):
 		"Ajusta o ponto de corte da linha"
 
 		if self.isVisible():
-			event.accept()
-
-			if self.isFullScreen() or self.isMaximized():
-				if self.max_length != 110:
-					self.max_length = 110
-			else:
-				if self.max_length != 50:
-					self.max_length = 50
-
+			self.max_length = self.max_length_generator()
 			self.font_setter()
 			self.journalist()
 
@@ -610,8 +682,12 @@ class LogOutput(QWidget):
 	def __init__(self, parent = None):
 		super().__init__()
 
-		self.setWindowTitle(f'{app_name} - Log ({log_tray}):')
+		self.setWindowTitle(f'{app_name} - Log ({log_tray})')
 		self.setFixedSize(850, 650)
+
+		icon = QtGui.QIcon()
+		icon.addFile(resource_path('normal.png'), QtCore.QSize(256, 256))
+		self.setWindowIcon(icon)
 
 		self.scroll = QScrollArea(self)
 		self.scroll.setGeometry(10, 10, 830, 620)
@@ -625,6 +701,7 @@ class LogOutput(QWidget):
 		report.close()
 		label_content = QLabel(content)
 		label_content.setMargin(10)
+		label_content.setFont(QtGui.QFont('Helvetica', 15))
 		self.scroll.setWidget(label_content)
 
 		self.show()
@@ -637,10 +714,10 @@ class LogOutput(QWidget):
 
 
 if __name__ == '__main__':
-	info(f'{app_name} ({__version__})')
+	log_files()
 	connection = InternetConnection()
 	if connection.online:
 		pacman = Update()
 		app = QApplication([])
-		widget = TrayMainMenu(pacman.status)
+		widget = TrayMainMenu(pacman.exception)
 		sys.exit(app.exec_())
